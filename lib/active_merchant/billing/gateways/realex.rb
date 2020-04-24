@@ -115,8 +115,8 @@ module ActiveMerchant
         attr_reader :saved_payer_ref, :saved_pmt_ref
 
         def initialize(data)
-          @saved_payer_ref = data['SAVED_PAYER_REF'] or raise('Missing SAVED_PAYER_REF')
-          @saved_pmt_ref = data['SAVED_PMT_REF'] or raise('Missing SAVED_PMT_REF')
+          @saved_payer_ref = data['SAVED_PAYER_REF'] || raise('Missing SAVED_PAYER_REF')
+          @saved_pmt_ref = data['SAVED_PMT_REF'] || raise('Missing SAVED_PMT_REF')
         end
       end
 
@@ -462,7 +462,7 @@ module ActiveMerchant
 
         !ip_address.match(/\A\d+\.\d+\.\d+\.\d+\z/).nil?
       end
-      
+
       def credit_card_identifier(credit_card)
         credit_card.is_a?(StoredCard) ? credit_card.saved_payer_ref : credit_card.number
       end

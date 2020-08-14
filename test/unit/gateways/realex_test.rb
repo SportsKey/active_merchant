@@ -293,6 +293,29 @@ class RealexTest < Test::Unit::TestCase
     assert_xml_equal valid_purchase_request_xml, @gateway.build_purchase_or_authorization_request(:purchase, @amount, @stored_card, options)
   end
 
+  def test_purchase_xml_with_stored_card
+    options = {
+      order_id: '1'
+    }
+
+    @gateway.expects(:new_timestamp).returns('20090824160201')
+
+    valid_purchase_request_xml = <<-SRC
+<request timestamp="20090824160201" type="receipt-in">
+  <merchantid>your_merchant_id</merchantid>
+  <account>your_account</account>
+  <orderid>1</orderid>
+  <amount currency="EUR">100</amount>
+  <payerref>abc-def-ghi</payerref>
+  <paymentmethod>rst-uvw-xyz</paymentmethod>
+  <autosettle flag="1"/>
+  <sha1hash>6bf071cf4bf450e4c4f7feef2308b5b95f2b9c95</sha1hash>
+</request>
+    SRC
+
+    assert_xml_equal valid_purchase_request_xml, @gateway.build_purchase_or_authorization_request(:purchase, @amount, @stored_card, options)
+  end
+
   def test_void_xml
     @gateway.expects(:new_timestamp).returns('20090824160201')
 
@@ -369,6 +392,29 @@ class RealexTest < Test::Unit::TestCase
     SRC
 
     assert_xml_equal valid_auth_request_xml, @gateway.build_purchase_or_authorization_request(:authorization, @amount, @credit_card, options)
+  end
+
+  def test_auth_xml_with_stored_card
+    options = {
+      order_id: '1'
+    }
+
+    @gateway.expects(:new_timestamp).returns('20090824160201')
+
+    valid_auth_request_xml = <<-SRC
+<request timestamp="20090824160201" type="receipt-in">
+  <merchantid>your_merchant_id</merchantid>
+  <account>your_account</account>
+  <orderid>1</orderid>
+  <amount currency=\"EUR\">100</amount>
+  <payerref>abc-def-ghi</payerref>
+  <paymentmethod>rst-uvw-xyz</paymentmethod>
+  <autosettle flag="0"/>
+  <sha1hash>6bf071cf4bf450e4c4f7feef2308b5b95f2b9c95</sha1hash>
+</request>
+    SRC
+
+    assert_xml_equal valid_auth_request_xml, @gateway.build_purchase_or_authorization_request(:authorization, @amount, @stored_card, options)
   end
 
   def test_auth_xml_with_stored_card
@@ -496,6 +542,63 @@ class RealexTest < Test::Unit::TestCase
     SRC
 
     assert_xml_equal valid_credit_request_xml, gateway.build_credit_request(@amount, @credit_card, @options)
+  end
+
+  def test_create_customer_xml
+    options = {
+      order_id: '1',
+      payer_ref: 'foo',
+      email: 'test@test.com',
+      first_name: 'Foo',
+      last_name: 'Bar'
+    }
+
+    @gateway.expects(:new_timestamp).returns('20090824160201')
+
+    valid_create_customer_request_xml = <<-SRC
+<request timestamp="20090824160201" type="payer-new">
+  <merchantid>your_merchant_id</merchantid>
+  <account>your_account</account>
+  <orderid>1</orderid>
+  <payer ref="foo" type="Retail">
+    <email>test@test.com</email>
+    <firstname>Foo</firstname>
+    <lastname>Bar</lastname>
+  </payer>
+  <sha1hash>94f2104c01becae9f346aac54c4f3bc7a8b0c8ec</sha1hash>
+</request>
+    SRC
+
+    assert_xml_equal valid_create_customer_request_xml, @gateway.build_create_customer_request(options)
+  end
+
+  def test_store_card_xml
+    options = {
+      order_id: '1',
+      payer_ref: 'foo',
+      card_ref: 'bar'
+    }
+
+    @gateway.expects(:new_timestamp).returns('20090824160201')
+
+    valid_store_card_request_xml = <<-SRC
+<request timestamp="20090824160201" type="card-new">
+  <merchantid>your_merchant_id</merchantid>
+  <account>your_account</account>
+  <orderid>1</orderid>
+  <card>
+    <ref>bar</ref>
+    <payerref>foo</payerref>
+    <number>4263971921001307</number>
+    <expdate>0808</expdate>
+    <chname>Longbob Longsen</chname>
+    <type>VISA</type>
+  </card>
+  <sha1hash>dc4f06626928c08b443d6450d8e90681f487b736</sha1hash>
+</request>
+    SRC
+
+    assert_xml_equal valid_store_card_request_xml, @gateway.build_store_card_request(@credit_card, options)
   end
 
   def test_create_customer_xml

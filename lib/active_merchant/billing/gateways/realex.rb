@@ -19,7 +19,9 @@ module ActiveMerchant
     # so if validation fails you can not correct and resend using the
     # same order id
     class RealexGateway < Gateway
-      self.live_url = self.test_url = 'https://epage.payandshop.com/epage-remote.cgi'
+      # See https://developer.globalpay.com/api/getting-started for API URLs
+      self.live_url = 'https://api.realexpayments.com/epage-remote.cgi'
+      self.test_url = 'https://api.sandbox.realexpayments.com/epage-remote.cgi'
 
       CARD_MAPPING = {
         'master'            => 'MC',
@@ -121,7 +123,7 @@ module ActiveMerchant
       end
 
       def commit(request)
-        response = parse(ssl_post(self.live_url, request))
+        response = parse(ssl_post(test? ? self.test_url : self.live_url, request))
 
         Response.new(
           (response[:result] == '00'),

@@ -18,6 +18,19 @@ class CyberSourceTest < Test::Unit::TestCase
     @master_credit_card = credit_card('4111111111111111', brand: 'master')
     @elo_credit_card = credit_card('5067310000000010', brand: 'elo')
     @declined_card = credit_card('801111111111111', brand: 'visa')
+    @network_token = network_tokenization_credit_card('4111111111111111',
+                                                      brand: 'visa',
+                                                      transaction_id: '123',
+                                                      eci: '05',
+                                                      payment_cryptogram: '111111111100cryptogram',
+                                                      source: :network_token)
+    @apple_pay = network_tokenization_credit_card('4111111111111111',
+                                                  brand: 'visa',
+                                                  transaction_id: '123',
+                                                  eci: '05',
+                                                  payment_cryptogram: '111111111100cryptogram',
+                                                  source: :apple_pay)
+    @google_pay = network_tokenization_credit_card('4242424242424242', source: :google_pay)
     @check = check()
 
     @options = {
@@ -95,6 +108,22 @@ class CyberSourceTest < Test::Unit::TestCase
       @gateway.authorize(100, @credit_card, @options.merge(mobile_remote_payment_type: 'T'))
     end.check_request do |_endpoint, data, _headers|
       assert_match(/<mobileRemotePaymentType>T<\/mobileRemotePaymentType>/, data)
+    end.respond_with(successful_authorization_response)
+  end
+
+  def test_successful_authorize_with_cc_auth_service_first_recurring_payment
+    stub_comms do
+      @gateway.authorize(100, @credit_card, @options.merge(first_recurring_payment: true))
+    end.check_request do |_endpoint, data, _headers|
+      assert_match(/<firstRecurringPayment>true<\/firstRecurringPayment>/, data)
+    end.respond_with(successful_authorization_response)
+  end
+
+  def test_successful_authorize_with_cc_auth_service_aggregator_id
+    stub_comms do
+      @gateway.authorize(100, @credit_card, @options.merge(aggregator_id: 'ABCDE'))
+    end.check_request do |_endpoint, data, _headers|
+      assert_match(/<aggregatorID>ABCDE<\/aggregatorID>/, data)
     end.respond_with(successful_authorization_response)
   end
 
@@ -217,7 +246,7 @@ class CyberSourceTest < Test::Unit::TestCase
 
   def test_purchase_with_apple_pay_includes_payment_solution_001
     stub_comms do
-      @gateway.purchase(100, network_tokenization_credit_card('4242424242424242', source: :apple_pay))
+      @gateway.purchase(100, @apple_pay)
     end.check_request do |_endpoint, data, _headers|
       assert_match(/<paymentSolution>001<\/paymentSolution>/, data)
     end.respond_with(successful_purchase_response)
@@ -225,7 +254,7 @@ class CyberSourceTest < Test::Unit::TestCase
 
   def test_purchase_with_google_pay_includes_payment_solution_012
     stub_comms do
-      @gateway.purchase(100, network_tokenization_credit_card('4242424242424242', source: :google_pay))
+      @gateway.purchase(100, @google_pay)
     end.check_request do |_endpoint, data, _headers|
       assert_match(/<paymentSolution>012<\/paymentSolution>/, data)
     end.respond_with(successful_purchase_response)
@@ -299,7 +328,7 @@ class CyberSourceTest < Test::Unit::TestCase
 
   def test_authorize_with_apple_pay_includes_payment_solution_001
     stub_comms do
-      @gateway.authorize(100, network_tokenization_credit_card('4242424242424242', source: :apple_pay))
+      @gateway.authorize(100, @apple_pay)
     end.check_request do |_endpoint, data, _headers|
       assert_match(/<paymentSolution>001<\/paymentSolution>/, data)
     end.respond_with(successful_authorization_response)
@@ -307,7 +336,7 @@ class CyberSourceTest < Test::Unit::TestCase
 
   def test_authorize_with_google_pay_includes_payment_solution_012
     stub_comms do
-      @gateway.authorize(100, network_tokenization_credit_card('4242424242424242', source: :google_pay))
+      @gateway.authorize(100, @google_pay)
     end.check_request do |_endpoint, data, _headers|
       assert_match(/<paymentSolution>012<\/paymentSolution>/, data)
     end.respond_with(successful_authorization_response)
@@ -385,15 +414,8 @@ class CyberSourceTest < Test::Unit::TestCase
       true
     end.returns(successful_purchase_response)
 
-    credit_card = network_tokenization_credit_card(
-      '4111111111111111',
-      brand: 'visa',
-      transaction_id: '123',
-      eci: '05',
-      payment_cryptogram: '111111111100cryptogram'
-    )
     options = @options.merge(ignore_avs: true)
-    assert response = @gateway.purchase(@amount, credit_card, options)
+    assert response = @gateway.purchase(@amount, @network_token, options)
     assert_success response
   end
 
@@ -429,9 +451,7 @@ class CyberSourceTest < Test::Unit::TestCase
       true
     end.returns(successful_purchase_response)
 
-    assert response = @gateway.purchase(@amount, @credit_card, @options.merge(
-                                                                 ignore_cvv: true
-                                                               ))
+    assert response = @gateway.purchase(@amount, @credit_card, @options.merge(ignore_cvv: true))
     assert_success response
   end
 
@@ -442,15 +462,8 @@ class CyberSourceTest < Test::Unit::TestCase
       true
     end.returns(successful_purchase_response)
 
-    credit_card = network_tokenization_credit_card(
-      '4111111111111111',
-      brand: 'visa',
-      transaction_id: '123',
-      eci: '05',
-      payment_cryptogram: '111111111100cryptogram'
-    )
     options = @options.merge(ignore_cvv: true)
-    assert response = @gateway.purchase(@amount, credit_card, options)
+    assert response = @gateway.purchase(@amount, @network_token, options)
     assert_success response
   end
 
@@ -461,9 +474,7 @@ class CyberSourceTest < Test::Unit::TestCase
       true
     end.returns(successful_purchase_response)
 
-    assert response = @gateway.purchase(@amount, @credit_card, @options.merge(
-                                                                 ignore_cvv: false
-                                                               ))
+    assert response = @gateway.purchase(@amount, @credit_card, @options.merge(ignore_cvv: false))
     assert_success response
 
     @gateway.expects(:ssl_post).with do |_host, request_body|
@@ -472,9 +483,69 @@ class CyberSourceTest < Test::Unit::TestCase
       true
     end.returns(successful_purchase_response)
 
-    assert response = @gateway.purchase(@amount, @credit_card, @options.merge(
-                                                                 ignore_cvv: 'false'
-                                                               ))
+    assert response = @gateway.purchase(@amount, @credit_card, @options.merge(ignore_cvv: 'false'))
+    assert_success response
+  end
+
+  def test_successful_apple_pay_purchase_subsequent_auth_visa
+    @gateway.expects(:ssl_post).with do |_host, request_body|
+      assert_not_match %r'<cavv>', request_body
+      assert_not_match %r'<xid>', request_body
+      assert_match %r'<commerceIndicator>internet</commerceIndicator>', request_body
+      true
+    end.returns(successful_purchase_response)
+
+    options = @options.merge({
+      stored_credential: {
+        initiator: 'merchant',
+        reason_type: 'unscheduled',
+        network_transaction_id: '016150703802094'
+      }
+    })
+    assert response = @gateway.purchase(@amount, @apple_pay, options)
+    assert_success response
+  end
+
+  def test_successful_apple_pay_purchase_subsequent_auth_mastercard
+    @gateway.expects(:ssl_post).with do |_host, request_body|
+      assert_not_match %r'<authenticationData>', request_body
+      assert_match %r'<commerceIndicator>internet</commerceIndicator>', request_body
+      true
+    end.returns(successful_purchase_response)
+
+    credit_card = network_tokenization_credit_card('5555555555554444',
+                                                   brand: 'master',
+                                                   transaction_id: '123',
+                                                   eci: '05',
+                                                   payment_cryptogram: '111111111100cryptogram',
+                                                   source: :apple_pay)
+    options = @options.merge({
+      stored_credential: {
+        initiator: 'merchant',
+        reason_type: 'unscheduled',
+        network_transaction_id: '016150703802094'
+      }
+    })
+    assert response = @gateway.purchase(@amount, credit_card, options)
+    assert_success response
+  end
+
+  def test_successful_network_token_purchase_subsequent_auth_visa
+    @gateway.expects(:ssl_post).with do |_host, request_body|
+      assert_match %r'<cavv>111111111100cryptogram</cavv>', request_body
+      assert_match %r'<commerceIndicator>vbv</commerceIndicator>', request_body
+      assert_not_match %r'<commerceIndicator>internet</commerceIndicator>', request_body
+      true
+    end.returns(successful_purchase_response)
+
+    options = @options.merge({
+      stored_credential: {
+        initiator: 'merchant',
+        reason_type: 'unscheduled',
+        network_transaction_id: '016150703802094'
+      }
+    })
+    assert response = @gateway.purchase(@amount, @network_token, options)
     assert_success response
   end
 
@@ -509,6 +580,24 @@ class CyberSourceTest < Test::Unit::TestCase
     @gateway.stubs(:ssl_post).returns(successful_authorization_response)
     assert response = @gateway.authorize(@amount, @credit_card, @options)
     assert_equal Response, response.class
+    assert response.success?
+    assert response.test?
+  end
+
+  def test_successful_reconciliation_id_2
+    @gateway.stubs(:ssl_post).returns(successful_purchase_and_capture_response)
+    assert response = @gateway.purchase(@amount, @credit_card, @options)
+    assert_equal response.params['reconciliationID'], 'abcdf'
+    assert_equal response.params['reconciliationID2'], '31159291T3XM2B13'
+    assert response.success?
+    assert response.test?
+  end
+
+  def test_successful_authorization_without_reconciliation_id_2
+    @gateway.stubs(:ssl_post).returns(successful_authorization_response)
+    assert response = @gateway.authorize(@amount, @credit_card, @options)
+    assert_equal response.params['reconciliationID2'], nil
+    assert_equal response.params['reconciliationID'], '23439130C40VZ2FB'
     assert response.success?
     assert response.test?
   end
@@ -885,16 +974,8 @@ class CyberSourceTest < Test::Unit::TestCase
   end
 
   def test_successful_auth_with_network_tokenization_for_visa
-    credit_card = network_tokenization_credit_card(
-      '4111111111111111',
-      brand: 'visa',
-      transaction_id: '123',
-      eci: '05',
-      payment_cryptogram: '111111111100cryptogram'
-    )
-
     response = stub_comms do
-      @gateway.authorize(@amount, credit_card, @options)
+      @gateway.authorize(@amount, @network_token, @options)
     end.check_request do |_endpoint, body, _headers|
       assert_xml_valid_to_xsd(body)
       assert_match %r'<ccAuthService run=\"true\">\n  <cavv>111111111100cryptogram</cavv>\n  <commerceIndicator>vbv</commerceIndicator>\n  <xid>111111111100cryptogram</xid>\n</ccAuthService>\n<businessRules>\n</businessRules>\n<paymentNetworkToken>\n  <transactionType>1</transactionType>\n</paymentNetworkToken>', body
@@ -904,16 +985,8 @@ class CyberSourceTest < Test::Unit::TestCase
   end
 
   def test_successful_purchase_with_network_tokenization_for_visa
-    credit_card = network_tokenization_credit_card(
-      '4111111111111111',
-      brand: 'visa',
-      transaction_id: '123',
-      eci: '05',
-      payment_cryptogram: '111111111100cryptogram'
-    )
-
     response = stub_comms do
-      @gateway.purchase(@amount, credit_card, @options)
+      @gateway.purchase(@amount, @network_token, @options)
     end.check_request do |_endpoint, body, _headers|
       assert_xml_valid_to_xsd(body)
       assert_match %r'<ccAuthService run="true">.+?<ccCaptureService run="true">'m, body
@@ -1381,6 +1454,82 @@ class CyberSourceTest < Test::Unit::TestCase
     end.respond_with(successful_purchase_response)
   end
 
+  def test_add_3ds_exemption_fields_except_stored_credential
+    CyberSourceGateway::THREEDS_EXEMPTIONS.keys.reject { |k| k == :stored_credential }.each do |exemption|
+      stub_comms do
+        @gateway.purchase(@amount, @credit_card, @options.merge(options_with_normalized_3ds, three_ds_exemption_type: exemption.to_s, merchant_id: 'test', billing_address: {
+          'address1' => '221B Baker Street',
+          'city' => 'London',
+          'zip' => 'NW16XE',
+          'country' => 'GB'
+        }))
+      end.check_request do |_endpoint, data, _headers|
+        # billing details
+        assert_match(%r(<billTo>\n), data)
+        assert_match(%r(<firstName>Longbob</firstName>), data)
+        assert_match(%r(<lastName>Longsen</lastName>), data)
+        assert_match(%r(<street1>221B Baker Street</street1>), data)
+        assert_match(%r(<city>London</city>), data)
+        assert_match(%r(<postalCode>NW16XE</postalCode>), data)
+        assert_match(%r(<country>GB</country>), data)
+        # card details
+        assert_match(%r(<card>\n), data)
+        assert_match(%r(<accountNumber>4111111111111111</accountNumber>), data)
+        assert_match(%r(<expirationMonth>#{@gateway.format(@credit_card.month, :two_digits)}</expirationMonth>), data)
+        assert_match(%r(<expirationYear>#{@gateway.format(@credit_card.year, :four_digits)}</expirationYear>), data)
+        # merchant data
+        assert_match(%r(<merchantID>test</merchantID>), data)
+        assert_match(%r(<merchantReferenceCode>#{@options[:order_id]}</merchantReferenceCode>), data)
+        # amount data
+        assert_match(%r(<purchaseTotals>\n), data)
+        assert_match(%r(<grandTotalAmount>#{@gateway.send(:localized_amount, @amount.to_i, @options[:currency])}</grandTotalAmount>), data)
+        # 3ds exemption tag
+        assert_match %r(<ccAuthService run=\"true\">\n), data
+        assert_match(%r(<#{CyberSourceGateway::THREEDS_EXEMPTIONS[exemption]}>1</#{CyberSourceGateway::THREEDS_EXEMPTIONS[exemption]}>), data)
+      end.respond_with(successful_purchase_response)
+    end
+  end
+
+  def test_add_stored_credential_3ds_exemption
+    @options[:stored_credential] = {
+      initiator: 'merchant',
+      reason_type: 'recurring',
+      initial_transaction: false,
+      network_transaction_id: '016150703802094'
+    }
+
+    stub_comms do
+      @gateway.purchase(@amount, @credit_card, @options.merge(options_with_normalized_3ds, three_ds_exemption_type: CyberSourceGateway::THREEDS_EXEMPTIONS[:stored_credential], merchant_id: 'test', billing_address: {
+        'address1' => '221B Baker Street',
+        'city' => 'London',
+        'zip' => 'NW16XE',
+        'country' => 'GB'
+      }))
+    end.check_request do |_endpoint, data, _headers|
+      # billing details
+      assert_match(%r(<billTo>\n), data)
+      assert_match(%r(<firstName>Longbob</firstName>), data)
+      assert_match(%r(<lastName>Longsen</lastName>), data)
+      assert_match(%r(<street1>221B Baker Street</street1>), data)
+      assert_match(%r(<city>London</city>), data)
+      assert_match(%r(<postalCode>NW16XE</postalCode>), data)
+      assert_match(%r(<country>GB</country>), data)
+      # card details
+      assert_match(%r(<card>\n), data)
+      assert_match(%r(<accountNumber>4111111111111111</accountNumber>), data)
+      assert_match(%r(<expirationMonth>#{@gateway.format(@credit_card.month, :two_digits)}</expirationMonth>), data)
+      assert_match(%r(<expirationYear>#{@gateway.format(@credit_card.year, :four_digits)}</expirationYear>), data)
+      # merchant data
+      assert_match(%r(<merchantID>test</merchantID>), data)
+      assert_match(%r(<merchantReferenceCode>#{@options[:order_id]}</merchantReferenceCode>), data)
+      # amount data
+      assert_match(%r(<purchaseTotals>\n), data)
+      assert_match(%r(<grandTotalAmount>#{@gateway.send(:localized_amount, @amount.to_i, @options[:currency])}</grandTotalAmount>), data)
+      # 3ds exemption tag
+      assert_match(%r(<subsequentAuthStoredCredential>true</subsequentAuthStoredCredential>), data)
+    end.respond_with(successful_purchase_response)
+  end
+
   def test_scrub
     assert_equal @gateway.scrub(pre_scrubbed), post_scrubbed
   end
@@ -1665,6 +1814,14 @@ class CyberSourceTest < Test::Unit::TestCase
       <?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
       <soap:Header>
       <wsse:Security xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"><wsu:Timestamp xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" wsu:Id="Timestamp-2636690"><wsu:Created>2008-01-15T21:42:03.343Z</wsu:Created></wsu:Timestamp></wsse:Security></soap:Header><soap:Body><c:replyMessage xmlns:c="urn:schemas-cybersource-com:transaction-data-1.26"><c:merchantReferenceCode>b0a6cf9aa07f1a8495f89c364bbd6a9a</c:merchantReferenceCode><c:requestID>2004333231260008401927</c:requestID><c:decision>ACCEPT</c:decision><c:reasonCode>100</c:reasonCode><c:requestToken>Afvvj7Ke2Fmsbq0wHFE2sM6R4GAptYZ0jwPSA+R9PhkyhFTb0KRjoE4+ynthZrG6tMBwjAtT</c:requestToken><c:purchaseTotals><c:currency>USD</c:currency></c:purchaseTotals><c:ccAuthReply><c:reasonCode>100</c:reasonCode><c:amount>1.00</c:amount><c:authorizationCode>123456</c:authorizationCode><c:avsCode>Y</c:avsCode><c:avsCodeRaw>Y</c:avsCodeRaw><c:cvCode>M</c:cvCode><c:cvCodeRaw>M</c:cvCodeRaw><c:authorizedDateTime>2008-01-15T21:42:03Z</c:authorizedDateTime><c:processorResponse>00</c:processorResponse><c:authFactorCode>U</c:authFactorCode></c:ccAuthReply></c:replyMessage></soap:Body></soap:Envelope>
+    XML
+  end
+
+  def successful_purchase_and_capture_response
+    <<~XML
+      <?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+      <soap:Header>
+      <wsse:Security xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"><wsu:Timestamp xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" wsu:Id="Timestamp-2636690"><wsu:Created>2008-01-15T21:42:03.343Z</wsu:Created></wsu:Timestamp></wsse:Security></soap:Header><soap:Body><c:replyMessage xmlns:c="urn:schemas-cybersource-com:transaction-data-1.26"><c:merchantReferenceCode>b0a6cf9aa07f1a8495f89c364bbd6a9a</c:merchantReferenceCode><c:requestID>2004333231260008401927</c:requestID><c:decision>ACCEPT</c:decision><c:reasonCode>100</c:reasonCode><c:requestToken>Afvvj7Ke2Fmsbq0wHFE2sM6R4GAptYZ0jwPSA+R9PhkyhFTb0KRjoE4+ynthZrG6tMBwjAtT</c:requestToken><c:purchaseTotals><c:currency>USD</c:currency></c:purchaseTotals><c:ccAuthReply><c:reasonCode>100</c:reasonCode><c:amount>1.00</c:amount><c:reconciliationID>abcdf</c:reconciliationID><c:authorizationCode>123456</c:authorizationCode><c:avsCode>Y</c:avsCode><c:avsCodeRaw>Y</c:avsCodeRaw><c:cvCode>M</c:cvCode><c:cvCodeRaw>M</c:cvCodeRaw><c:authorizedDateTime>2008-01-15T21:42:03Z</c:authorizedDateTime><c:processorResponse>00</c:processorResponse><c:authFactorCode>U</c:authFactorCode></c:ccAuthReply><c:ccCaptureReply><c:reasonCode>100</c:reasonCode><c:requestDateTime>2007-07-17T17:15:32Z</c:requestDateTime><c:amount>1.00</c:amount><c:reconciliationID>31159291T3XM2B13</c:reconciliationID></c:ccCaptureReply></c:replyMessage></soap:Body></soap:Envelope>
     XML
   end
 

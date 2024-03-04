@@ -75,9 +75,12 @@ module ActiveMerchant #:nodoc:
         @braintree_gateway = Braintree::Gateway.new(@configuration)
       end
 
-      def setup_purchase
+      def setup_purchase(options = {})
+        post = {}
+        add_merchant_account_id(post, options)
+
         commit do
-          Response.new(true, 'Client token created', { client_token: @braintree_gateway.client_token.generate })
+          Response.new(true, 'Client token created', { client_token: @braintree_gateway.client_token.generate(post) })
         end
       end
 
@@ -106,6 +109,8 @@ module ActiveMerchant #:nodoc:
       end
 
       def credit(money, credit_card_or_vault_id, options = {})
+        return Response.new(false, DIRECT_BANK_ERROR) if credit_card_or_vault_id.is_a? Check
+
         create_transaction(:credit, money, credit_card_or_vault_id, options)
       end
 
@@ -599,7 +604,32 @@ module ActiveMerchant #:nodoc:
           'bin'                 => transaction.credit_card_details.bin,
           'last_4'              => transaction.credit_card_details.last_4,
           'card_type'           => transaction.credit_card_details.card_type,
-          'token'               => transaction.credit_card_details.token
+          'token'               => transaction.credit_card_details.token,
+          'debit'               => transaction.credit_card_details.debit,
+          'prepaid'             => transaction.credit_card_details.prepaid,
+          'issuing_bank'        => transaction.credit_card_details.issuing_bank
+        }
+
+        network_token_details = {
+          'debit'               => transaction.network_token_details.debit,
+          'prepaid'             => transaction.network_token_details.prepaid,
+          'issuing_bank'        => transaction.network_token_details.issuing_bank
+        }
+
+        google_pay_details = {
+          'debit'               => transaction.google_pay_details.debit,
+          'prepaid'             => transaction.google_pay_details.prepaid
+        }
+
+        apple_pay_details = {
+          'debit'               => transaction.apple_pay_details.debit,
+          'prepaid'             => transaction.apple_pay_details.prepaid,
+          'issuing_bank'        => transaction.apple_pay_details.issuing_bank
+        }
+
+        paypal_details = {
+          'payer_id'            => transaction.paypal_details.payer_id,
+          'payer_email'         => transaction.paypal_details.payer_email
         }
 
         if transaction.risk_data
@@ -613,11 +643,23 @@ module ActiveMerchant #:nodoc:
           risk_data = nil
         end
 
+        if transaction.payment_receipt
+          payment_receipt = {
+            'global_id' => transaction.payment_receipt.global_id
+          }
+        else
+          payment_receipt = nil
+        end
+
         {
           'order_id'                     => transaction.order_id,
           'amount'                       => transaction.amount.to_s,
           'status'                       => transaction.status,
           'credit_card_details'          => credit_card_details,
+          'network_token_details'        => network_token_details,
+          'apple_pay_details'            => apple_pay_details,
+          'google_pay_details'           => google_pay_details,
+          'paypal_details'               => paypal_details,
           'customer_details'             => customer_details,
           'billing_details'              => billing_details,
           'shipping_details'             => shipping_details,
@@ -627,7 +669,9 @@ module ActiveMerchant #:nodoc:
           'network_transaction_id'       => transaction.network_transaction_id || nil,
           'processor_response_code'      => response_code_from_result(result),
           'processor_authorization_code' => transaction.processor_authorization_code,
-          'recurring'                    => transaction.recurring
+          'recurring'                    => transaction.recurring,
+          'payment_receipt'              => payment_receipt,
+          'payment_instrument_type'      => transaction.payment_instrument_type
         }
       end
 
@@ -672,6 +716,8 @@ module ActiveMerchant #:nodoc:
         add_level_3_data(parameters, options)
 
         add_3ds_info(parameters, options[:three_d_secure])
+
+        parameters[:sca_exemption] = options[:three_ds_exemption_type] if options[:three_ds_exemption_type]
 
         if options[:payment_method_nonce].is_a?(String)
           parameters.delete(:customer)
@@ -811,15 +857,41 @@ module ActiveMerchant #:nodoc:
       end
 
       def add_stored_credential_data(parameters, credit_card_or_vault_id, options)
+        # Braintree has informed us that the stored_credential mapping may be incorrect
+        # In order to prevent possible breaking changes we will only apply the new logic if
+        # specifically requested. This will be the default behavior in a future release.
         return unless (stored_credential = options[:stored_credential])
 
-        parameters[:external_vault] = {}
-        if stored_credential[:initial_transaction]
-          parameters[:external_vault][:status] = 'will_vault'
+        add_external_vault(parameters, stored_credential)
+
+        if options[:stored_credentials_v2]
+          stored_credentials_v2(parameters, stored_credential)
         else
-          parameters[:external_vault][:status] = 'vaulted'
-          parameters[:external_vault][:previous_network_transaction_id] = stored_credential[:network_transaction_id]
+          stored_credentials_v1(parameters, stored_credential)
         end
+      end
+
+      def stored_credentials_v2(parameters, stored_credential)
+        # Differences between v1 and v2 are
+        # initial_transaction + recurring/installment should be labeled {{reason_type}}_first
+        # unscheduled in AM should map to '' at BT because unscheduled here means not on a fixed timeline or fixed amount
+        case stored_credential[:reason_type]
+        when 'recurring', 'installment'
+          if stored_credential[:initial_transaction]
+            parameters[:transaction_source] = "#{stored_credential[:reason_type]}_first"
+          else
+            parameters[:transaction_source] = stored_credential[:reason_type]
+          end
+        when 'recurring_first', 'moto'
+          parameters[:transaction_source] = stored_credential[:reason_type]
+        when 'unscheduled'
+          parameters[:transaction_source] = stored_credential[:initiator] == 'merchant' ? stored_credential[:reason_type] : ''
+        else
+          parameters[:transaction_source] = ''
+        end
+      end
+
+      def stored_credentials_v1(parameters, stored_credential)
         if stored_credential[:initiator] == 'merchant'
           if stored_credential[:reason_type] == 'installment'
             parameters[:transaction_source] = 'recurring'
@@ -830,6 +902,16 @@ module ActiveMerchant #:nodoc:
           parameters[:transaction_source] = stored_credential[:reason_type]
         else
           parameters[:transaction_source] = ''
+        end
+      end
+
+      def add_external_vault(parameters, stored_credential)
+        parameters[:external_vault] = {}
+        if stored_credential[:initial_transaction]
+          parameters[:external_vault][:status] = 'will_vault'
+        else
+          parameters[:external_vault][:status] = 'vaulted'
+          parameters[:external_vault][:previous_network_transaction_id] = stored_credential[:network_transaction_id]
         end
       end
 

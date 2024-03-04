@@ -746,21 +746,34 @@ class BraintreeBlueTest < Test::Unit::TestCase
   end
 
   def test_three_d_secure_pass_thru_handling_version_2
-    Braintree::TransactionGateway.
-      any_instance.
-      expects(:sale).
-      with(has_entries(three_d_secure_pass_thru: has_entries(
-        three_d_secure_version: '2.0',
+    three_ds_expectation = {
+      three_d_secure_version: '2.0',
+      cavv: 'cavv',
+      eci_flag: 'eci',
+      ds_transaction_id: 'trans_id',
+      cavv_algorithm: 'algorithm',
+      directory_response: 'directory',
+      authentication_response: 'auth'
+    }
+
+    Braintree::TransactionGateway.any_instance.expects(:sale).with do |params|
+      (params[:sca_exemption] == 'low_value')
+      (params[:three_d_secure_pass_thru] == three_ds_expectation)
+    end.returns(braintree_result)
+
+    options = {
+      three_ds_exemption_type: 'low_value',
+      three_d_secure: {
+        version: '2.0',
         cavv: 'cavv',
-        eci_flag: 'eci',
+        eci: 'eci',
         ds_transaction_id: 'trans_id',
         cavv_algorithm: 'algorithm',
-        directory_response: 'directory',
-        authentication_response: 'auth'
-      ))).
-      returns(braintree_result)
-
-    @gateway.purchase(100, credit_card('41111111111111111111'), three_d_secure: { version: '2.0', cavv: 'cavv', eci: 'eci', ds_transaction_id: 'trans_id', cavv_algorithm: 'algorithm', directory_response_status: 'directory', authentication_response_status: 'auth' })
+        directory_response_status: 'directory',
+        authentication_response_status: 'auth'
+      }
+    }
+    @gateway.purchase(100, credit_card('41111111111111111111'), options)
   end
 
   def test_three_d_secure_pass_thru_some_fields
@@ -1338,6 +1351,21 @@ class BraintreeBlueTest < Test::Unit::TestCase
     @gateway.purchase(100, credit_card('41111111111111111111'), { test: true, order_id: '1', stored_credential: { initiator: 'merchant', reason_type: 'recurring_first', initial_transaction: true } })
   end
 
+  def test_stored_credential_v2_recurring_first_cit_initial
+    Braintree::TransactionGateway.any_instance.expects(:sale).with(
+      standard_purchase_params.merge(
+        {
+          external_vault: {
+            status: 'will_vault'
+          },
+          transaction_source: 'recurring_first'
+        }
+      )
+    ).returns(braintree_result)
+
+    @gateway.purchase(100, credit_card('41111111111111111111'), { test: true, order_id: '1', stored_credentials_v2: true, stored_credential: { initiator: 'merchant', reason_type: 'recurring_first', initial_transaction: true } })
+  end
+
   def test_stored_credential_moto_cit_initial
     Braintree::TransactionGateway.any_instance.expects(:sale).with(
       standard_purchase_params.merge(
@@ -1353,6 +1381,98 @@ class BraintreeBlueTest < Test::Unit::TestCase
     @gateway.purchase(100, credit_card('41111111111111111111'), { test: true, order_id: '1', stored_credential: { initiator: 'merchant', reason_type: 'moto', initial_transaction: true } })
   end
 
+  def test_stored_credential_v2_recurring_first
+    Braintree::TransactionGateway.any_instance.expects(:sale).with(
+      standard_purchase_params.merge(
+        {
+          external_vault: {
+            status: 'will_vault'
+          },
+          transaction_source: 'recurring_first'
+        }
+      )
+    ).returns(braintree_result)
+
+    @gateway.purchase(100, credit_card('41111111111111111111'), { test: true, order_id: '1', stored_credentials_v2: true, stored_credential: stored_credential(:cardholder, :recurring, :initial) })
+  end
+
+  def test_stored_credential_v2_follow_on_recurring_first
+    Braintree::TransactionGateway.any_instance.expects(:sale).with(
+      standard_purchase_params.merge(
+        {
+          external_vault: {
+            status: 'vaulted',
+            previous_network_transaction_id: '123ABC'
+          },
+          transaction_source: 'recurring'
+        }
+      )
+    ).returns(braintree_result)
+
+    @gateway.purchase(100, credit_card('41111111111111111111'), { test: true, order_id: '1', stored_credentials_v2: true, stored_credential: stored_credential(:merchant, :recurring, id: '123ABC') })
+  end
+
+  def test_stored_credential_v2_installment_first
+    Braintree::TransactionGateway.any_instance.expects(:sale).with(
+      standard_purchase_params.merge(
+        {
+          external_vault: {
+            status: 'will_vault'
+          },
+          transaction_source: 'installment_first'
+        }
+      )
+    ).returns(braintree_result)
+
+    @gateway.purchase(100, credit_card('41111111111111111111'), { test: true, order_id: '1', stored_credentials_v2: true, stored_credential: stored_credential(:cardholder, :installment, :initial) })
+  end
+
+  def test_stored_credential_v2_follow_on_installment_first
+    Braintree::TransactionGateway.any_instance.expects(:sale).with(
+      standard_purchase_params.merge(
+        {
+          external_vault: {
+            status: 'vaulted',
+            previous_network_transaction_id: '123ABC'
+          },
+          transaction_source: 'installment'
+        }
+      )
+    ).returns(braintree_result)
+
+    @gateway.purchase(100, credit_card('41111111111111111111'), { test: true, order_id: '1', stored_credentials_v2: true, stored_credential: stored_credential(:merchant, :installment, id: '123ABC') })
+  end
+
+  def test_stored_credential_v2_unscheduled_cit_initial
+    Braintree::TransactionGateway.any_instance.expects(:sale).with(
+      standard_purchase_params.merge(
+        {
+          external_vault: {
+            status: 'will_vault'
+          },
+          transaction_source: ''
+        }
+      )
+    ).returns(braintree_result)
+
+    @gateway.purchase(100, credit_card('41111111111111111111'), { test: true, order_id: '1', stored_credentials_v2: true, stored_credential: stored_credential(:cardholder, :unscheduled, :initial) })
+  end
+
+  def test_stored_credential_v2_unscheduled_mit_initial
+    Braintree::TransactionGateway.any_instance.expects(:sale).with(
+      standard_purchase_params.merge(
+        {
+          external_vault: {
+            status: 'will_vault'
+          },
+          transaction_source: 'unscheduled'
+        }
+      )
+    ).returns(braintree_result)
+
+    @gateway.purchase(100, credit_card('41111111111111111111'), { test: true, order_id: '1', stored_credentials_v2: true, stored_credential: stored_credential(:merchant, :unscheduled, :initial) })
+  end
+
   def test_raises_exeption_when_adding_bank_account_to_customer_without_billing_address
     bank_account = check({ account_number: '1000000002', routing_number: '011000015' })
 
@@ -1363,6 +1483,14 @@ class BraintreeBlueTest < Test::Unit::TestCase
   def test_returns_error_on_authorize_when_passing_a_bank_account
     bank_account = check({ account_number: '1000000002', routing_number: '011000015' })
     response = @gateway.authorize(100, bank_account, {})
+
+    assert_failure response
+    assert_equal 'Direct bank account transactions are not supported. Bank accounts must be successfully stored before use.', response.message
+  end
+
+  def test_returns_error_on_general_credit_when_passing_a_bank_account
+    bank_account = check({ account_number: '1000000002', routing_number: '011000015' })
+    response = @gateway.credit(100, bank_account, {})
 
     assert_failure response
     assert_equal 'Direct bank account transactions are not supported. Bank accounts must be successfully stored before use.', response.message
@@ -1387,6 +1515,15 @@ class BraintreeBlueTest < Test::Unit::TestCase
 
   def test_scrub_sensitive_data
     assert_equal filtered_success_token_nonce, @gateway.scrub(success_create_token_nonce)
+  end
+
+  def test_setup_purchase
+    Braintree::ClientTokenGateway.any_instance.expects(:generate).with do |params|
+      (params[:merchant_account_id] == 'merchant_account_id')
+    end.returns('client_token')
+
+    response = @gateway.setup_purchase(merchant_account_id: 'merchant_account_id')
+    assert_equal 'client_token', response.params['client_token']
   end
 
   private

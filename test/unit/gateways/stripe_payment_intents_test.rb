@@ -47,6 +47,18 @@ class StripePaymentIntentsTest < Test::Unit::TestCase
       first_name: 'Longbob',
       last_name: 'Longsen'
     )
+
+    @network_token_credit_card = network_tokenization_credit_card(
+      '4000056655665556',
+      verification_value: '123',
+      payment_cryptogram: 'dGVzdGNyeXB0b2dyYW1YWFhYWFhYWFhYWFg9PQ==',
+      source: :network_token,
+      brand: 'visa',
+      month: '09',
+      year: '2030',
+      first_name: 'Longbob',
+      last_name: 'Longsen'
+    )
   end
 
   def test_successful_create_and_confirm_intent
@@ -69,6 +81,19 @@ class StripePaymentIntentsTest < Test::Unit::TestCase
     options = @options.merge(capture_method: 'manual', confirm: true)
     @gateway.expects(:ssl_request).twice.returns(successful_create_intent_response, successful_capture_response)
     assert create = @gateway.create_intent(@amount, @visa_token, options)
+    assert_success create
+    assert_equal 'requires_capture', create.params['status']
+
+    assert capture = @gateway.capture(@amount, create.params['id'], options)
+    assert_success capture
+    assert_equal 'succeeded', capture.params['status']
+    assert_equal 'Payment complete.', capture.params.dig('charges', 'data')[0].dig('outcome', 'seller_message')
+  end
+
+  def test_successful_create_and_capture_intent_with_network_token
+    options = @options.merge(capture_method: 'manual', confirm: true)
+    @gateway.expects(:ssl_request).twice.returns(successful_create_intent_manual_capture_response_with_network_token_fields, successful_manual_capture_of_payment_intent_response_with_network_token_fields)
+    assert create = @gateway.create_intent(@amount, @network_token_credit_card, options)
     assert_success create
     assert_equal 'requires_capture', create.params['status']
 
@@ -191,6 +216,7 @@ class StripePaymentIntentsTest < Test::Unit::TestCase
     assert create = @gateway.create_intent(@amount, 'pm_card_chargeDeclined', @options.merge(confirm: true))
     assert_equal 'requires_payment_method', create.params.dig('error', 'payment_intent', 'status')
     assert_equal false, create.params.dig('error', 'payment_intent', 'charges', 'data')[0].dig('captured')
+    assert_equal 'ch_1F2MB6AWOtgoysogAIvNV32Z', create.authorization
   end
 
   def test_failed_void_after_capture
@@ -204,6 +230,14 @@ class StripePaymentIntentsTest < Test::Unit::TestCase
       'it has a status of succeeded. Only a PaymentIntent with ' \
       'one of the following statuses may be canceled: ' \
       'requires_payment_method, requires_capture, requires_confirmation, requires_action.', cancel.message
+  end
+
+  def test_failed_verify
+    @gateway.expects(:add_payment_method_token).returns(@visa_token)
+    @gateway.expects(:ssl_request).returns(failed_verify_response)
+
+    assert create = @gateway.verify(@credit_card)
+    assert_equal 'seti_nhtadoeunhtaobjntaheodu', create.authorization
   end
 
   def test_connected_account
@@ -346,6 +380,16 @@ class StripePaymentIntentsTest < Test::Unit::TestCase
     end.respond_with(successful_create_intent_response)
   end
 
+  def test_successful_purchase_with_card_brand
+    @options[:card_brand] = 'cartes_bancaires'
+
+    stub_comms(@gateway, :ssl_request) do
+      @gateway.purchase(@amount, @visa_token, @options)
+    end.check_request do |_method, _endpoint, data, _headers|
+      assert_match('payment_method_options[card][network]=cartes_bancaires', data)
+    end.respond_with(successful_create_intent_response)
+  end
+
   def test_succesful_purchase_with_stored_credentials_without_sending_ntid
     [@three_ds_off_session_credit_card, @three_ds_authentication_required_setup_for_off_session].each do |card_to_use|
       network_transaction_id = '1098510912210968'
@@ -464,6 +508,14 @@ class StripePaymentIntentsTest < Test::Unit::TestCase
     end.respond_with(successful_create_intent_response)
   end
 
+  def test_sends_expand_balance_transaction
+    stub_comms(@gateway, :ssl_request) do
+      @gateway.purchase(@amount, @visa_token)
+    end.check_request do |_method, _endpoint, data, _headers|
+      assert_match('expand[0]=charges.data.balance_transaction', data)
+    end.respond_with(successful_create_intent_response)
+  end
+
   def test_purchase_with_google_pay
     options = {
       currency: 'GBP'
@@ -492,6 +544,28 @@ class StripePaymentIntentsTest < Test::Unit::TestCase
       assert_match('wallet[type]=google_pay', data) if %r{/wallet}.match?(endpoint)
       assert_match('payment_method=pi_', data) if %r{/payment_intents}.match?(endpoint)
     end.respond_with(successful_create_intent_response_with_google_pay_and_billing_address)
+  end
+
+  def test_purchase_with_network_token_card
+    options = {
+      currency: 'USD',
+      last_4: '4242'
+    }
+
+    stub_comms(@gateway, :ssl_request) do
+      @gateway.purchase(@amount, @network_token_credit_card, options)
+    end.check_request do |_method, endpoint, data, _headers|
+      assert_match(%r{/payment_intents}, endpoint)
+      assert_match('confirm=true', data)
+      assert_match('payment_method_data[type]=card', data)
+      assert_match('[card][exp_month]=9', data)
+      assert_match('[card][exp_year]=2030', data)
+      assert_match('[card][last4]=4242', data)
+      assert_match('[card][network_token][number]=4000056655665556', data)
+      assert_match("[card][network_token][cryptogram]=#{URI.encode_www_form_component('dGVzdGNyeXB0b2dyYW1YWFhYWFhYWFhYWFg9PQ==')}", data)
+      assert_match('[card][network_token][exp_month]=9', data)
+      assert_match('[card][network_token][exp_year]=2030', data)
+    end.respond_with(successful_create_intent_response_with_network_token_fields)
   end
 
   def test_purchase_with_shipping_options
@@ -832,6 +906,17 @@ class StripePaymentIntentsTest < Test::Unit::TestCase
     end.respond_with(successful_create_intent_response)
   end
 
+  def test_successful_avs_and_cvc_check
+    @gateway.expects(:ssl_request).returns(successful_purchase_avs_pass)
+    options = {}
+    assert purchase = @gateway.purchase(@amount, @visa_card, options)
+
+    assert_equal 'succeeded', purchase.params['status']
+    assert_equal 'M', purchase.cvv_result.dig('code')
+    assert_equal 'CVV matches', purchase.cvv_result.dig('message')
+    assert_equal 'Y', purchase.avs_result.dig('code')
+  end
+
   private
 
   def successful_setup_purchase
@@ -901,6 +986,534 @@ class StripePaymentIntentsTest < Test::Unit::TestCase
   def successful_create_intent_response
     <<-RESPONSE
       {"id":"pi_1F1xauAWOtgoysogIfHO8jGi","object":"payment_intent","amount":2020,"amount_capturable":2020,"amount_received":0,"application":null,"application_fee_amount":null,"canceled_at":null,"cancellation_reason":null,"capture_method":"manual","charges":{"object":"list","data":[{"id":"ch_1F1xavAWOtgoysogxrtSiCu4","object":"charge","amount":2020,"amount_refunded":0,"application":null,"application_fee":null,"application_fee_amount":null,"balance_transaction":null,"billing_details":{"address":{"city":null,"country":null,"line1":null,"line2":null,"postal_code":null,"state":null},"email":null,"name":null,"phone":null},"captured":false,"created":1564501833,"currency":"gbp","customer":"cus_7s22nNueP2Hjj6","description":null,"destination":null,"dispute":null,"failure_code":null,"failure_message":null,"fraud_details":{},"invoice":null,"livemode":false,"metadata":{},"on_behalf_of":null,"order":null,"outcome":{"network_status":"approved_by_network","reason":null,"risk_level":"normal","risk_score":58,"seller_message":"Payment complete.","type":"authorized"},"paid":true,"payment_intent":"pi_1F1xauAWOtgoysogIfHO8jGi","payment_method":"pm_1F1xauAWOtgoysog00COoKIU","payment_method_details":{"card":{"brand":"visa","checks":{"address_line1_check":null,"address_postal_code_check":null,"cvc_check":null},"country":"US","exp_month":7,"exp_year":2020,"fingerprint":"hfaVNMiXc0dYSiC5","funding":"credit","last4":"4242","three_d_secure":null,"wallet":null},"type":"card"},"receipt_email":null,"receipt_number":null,"receipt_url":"https://pay.stripe.com/receipts/acct_160DX6AWOtgoysog/ch_1F1xavAWOtgoysogxrtSiCu4/rcpt_FX1eGdFRi8ssOY8Fqk4X6nEjNeGV5PG","refunded":false,"refunds":{"object":"list","data":[],"has_more":false,"total_count":0,"url":"/v1/charges/ch_1F1xavAWOtgoysogxrtSiCu4/refunds"},"review":null,"shipping":null,"source":null,"source_transfer":null,"statement_descriptor":null,"status":"succeeded","transfer_data":null,"transfer_group":null}],"has_more":false,"total_count":1,"url":"/v1/charges?payment_intent=pi_1F1xauAWOtgoysogIfHO8jGi"},"client_secret":"pi_1F1xauAWOtgoysogIfHO8jGi_secret_ZrXvfydFv0BelaMQJgHxjts5b","confirmation_method":"manual","created":1564501832,"currency":"gbp","customer":"cus_7s22nNueP2Hjj6","description":null,"invoice":null,"last_payment_error":null,"livemode":false,"metadata":{},"next_action":null,"on_behalf_of":null,"payment_method":"pm_1F1xauAWOtgoysog00COoKIU","payment_method_options":{"card":{"request_three_d_secure":"automatic"}},"payment_method_types":["card"],"receipt_email":null,"review":null,"setup_future_usage":null,"shipping":null,"source":null,"statement_descriptor":null,"status":"requires_capture","transfer_data":null,"transfer_group":null}
+    RESPONSE
+  end
+
+  def successful_create_intent_response_with_network_token_fields
+    <<~RESPONSE
+      {
+        "id": "pi_3NfRruAWOtgoysog1FxgDwtf",
+        "object": "payment_intent",
+        "amount": 2000,
+        "amount_capturable": 0,
+        "amount_details": {
+          "tip": {
+          }
+        },
+        "amount_received": 2000,
+        "application": null,
+        "application_fee_amount": null,
+        "automatic_payment_methods": null,
+        "canceled_at": null,
+        "cancellation_reason": null,
+        "capture_method": "automatic",
+        "charges": {
+          "object": "list",
+          "data": [
+            {
+              "id": "ch_3NfRruAWOtgoysog1ptwVNHx",
+              "object": "charge",
+              "amount": 2000,
+              "amount_captured": 2000,
+              "amount_refunded": 0,
+              "application": null,
+              "application_fee": null,
+              "application_fee_amount": null,
+              "balance_transaction": "txn_3NfRruAWOtgoysog1mtFHzZr",
+              "billing_details": {
+                "address": {
+                  "city": null,
+                  "country": null,
+                  "line1": null,
+                  "line2": null,
+                  "postal_code": null,
+                  "state": null
+                },
+                "email": null,
+                "name": "Longbob Longsen",
+                "phone": null
+              },
+              "calculated_statement_descriptor": "SPREEDLY",
+              "captured": true,
+              "created": 1692123686,
+              "currency": "usd",
+              "customer": null,
+              "description": null,
+              "destination": null,
+              "dispute": null,
+              "disputed": false,
+              "failure_balance_transaction": null,
+              "failure_code": null,
+              "failure_message": null,
+              "fraud_details": {
+              },
+              "invoice": null,
+              "livemode": false,
+              "metadata": {
+              },
+              "on_behalf_of": null,
+              "order": null,
+              "outcome": {
+                "network_status": "approved_by_network",
+                "reason": null,
+                "risk_level": "normal",
+                "risk_score": 34,
+                "seller_message": "Payment complete.",
+                "type": "authorized"
+              },
+              "paid": true,
+              "payment_intent": "pi_3NfRruAWOtgoysog1FxgDwtf",
+              "payment_method": "pm_1NfRruAWOtgoysogjdx336vt",
+              "payment_method_details": {
+                "card": {
+                  "brand": "visa",
+                  "checks": {
+                    "address_line1_check": null,
+                    "address_postal_code_check": null,
+                    "cvc_check": "pass"
+                  },
+                  "country": "US",
+                  "ds_transaction_id": null,
+                  "exp_month": 9,
+                  "exp_year": 2030,
+                  "fingerprint": null,
+                  "funding": "debit",
+                  "installments": null,
+                  "last4": "4242",
+                  "mandate": null,
+                  "moto": null,
+                  "network": "visa",
+                  "network_token": {
+                    "exp_month": 9,
+                    "exp_year": 2030,
+                    "fingerprint": "OdTRtGskBulROtqa",
+                    "last4": "5556",
+                    "used": false
+                  },
+                  "network_transaction_id": "791008482116711",
+                  "three_d_secure": null,
+                  "wallet": null
+                },
+                "type": "card"
+              },
+              "receipt_email": null,
+              "receipt_number": null,
+              "receipt_url": "https://pay.stripe.com/receipts/payment/CAcaFwoVYWNjdF8xNjBEWDZBV090Z295c29nKKeE76YGMgbjse9I0TM6LBZ6z9Y1XXMETb-LDQ5oyLVXQhIMltBU0qwDkNKpNvrIGvXOhYmhorDkkE36",
+              "refunded": false,
+              "refunds": {
+                "object": "list",
+                "data": [
+                ],
+                "has_more": false,
+                "total_count": 0,
+                "url": "/v1/charges/ch_3NfRruAWOtgoysog1ptwVNHx/refunds"
+              },
+              "review": null,
+              "shipping": null,
+              "source": null,
+              "source_transfer": null,
+              "statement_descriptor": null,
+              "statement_descriptor_suffix": null,
+              "status": "succeeded",
+              "transfer_data": null,
+              "transfer_group": null
+            }
+          ],
+          "has_more": false,
+          "total_count": 1,
+          "url": "/v1/charges?payment_intent=pi_3NfRruAWOtgoysog1FxgDwtf"
+        },
+        "client_secret": "pi_3NfRruAWOtgoysog1FxgDwtf_secret_f4ke",
+        "confirmation_method": "automatic",
+        "created": 1692123686,
+        "currency": "usd",
+        "customer": null,
+        "description": null,
+        "invoice": null,
+        "last_payment_error": null,
+        "latest_charge": "ch_3NfRruAWOtgoysog1ptwVNHx",
+        "level3": null,
+        "livemode": false,
+        "metadata": {
+        },
+        "next_action": null,
+        "on_behalf_of": null,
+        "payment_method": "pm_1NfRruAWOtgoysogjdx336vt",
+        "payment_method_options": {
+          "card": {
+            "installments": null,
+            "mandate_options": null,
+            "network": null,
+            "request_three_d_secure": "automatic"
+          }
+        },
+        "payment_method_types": [
+          "card"
+        ],
+        "processing": null,
+        "receipt_email": null,
+        "review": null,
+        "setup_future_usage": null,
+        "shipping": null,
+        "source": null,
+        "statement_descriptor": null,
+        "statement_descriptor_suffix": null,
+        "status": "succeeded",
+        "transfer_data": null,
+        "transfer_group": null
+      }
+    RESPONSE
+  end
+
+  def successful_create_intent_manual_capture_response_with_network_token_fields
+    <<~RESPONSE
+      {
+        "id": "pi_3NfTpgAWOtgoysog1SqST5dL",
+        "object": "payment_intent",
+        "amount": 2000,
+        "amount_capturable": 2000,
+        "amount_details": {
+          "tip": {
+          }
+        },
+        "amount_received": 0,
+        "application": null,
+        "application_fee_amount": null,
+        "automatic_payment_methods": null,
+        "canceled_at": null,
+        "cancellation_reason": null,
+        "capture_method": "manual",
+        "charges": {
+          "object": "list",
+          "data": [
+            {
+              "id": "ch_3NfTpgAWOtgoysog1ZcuSdwZ",
+              "object": "charge",
+              "amount": 2000,
+              "amount_captured": 0,
+              "amount_refunded": 0,
+              "application": null,
+              "application_fee": null,
+              "application_fee_amount": null,
+              "balance_transaction": null,
+              "billing_details": {
+                "address": {
+                  "city": null,
+                  "country": null,
+                  "line1": null,
+                  "line2": null,
+                  "postal_code": null,
+                  "state": null
+                },
+                "email": null,
+                "name": "Longbob Longsen",
+                "phone": null
+              },
+              "calculated_statement_descriptor": "SPREEDLY",
+              "captured": false,
+              "created": 1692131237,
+              "currency": "gbp",
+              "customer": "cus_OSOcijtQkDdBbF",
+              "description": null,
+              "destination": null,
+              "dispute": null,
+              "disputed": false,
+              "failure_balance_transaction": null,
+              "failure_code": null,
+              "failure_message": null,
+              "fraud_details": {
+              },
+              "invoice": null,
+              "livemode": false,
+              "metadata": {
+              },
+              "on_behalf_of": null,
+              "order": null,
+              "outcome": {
+                "network_status": "approved_by_network",
+                "reason": null,
+                "risk_level": "normal",
+                "risk_score": 24,
+                "seller_message": "Payment complete.",
+                "type": "authorized"
+              },
+              "paid": true,
+              "payment_intent": "pi_3NfTpgAWOtgoysog1SqST5dL",
+              "payment_method": "pm_1NfTpgAWOtgoysogHnl1rNCf",
+              "payment_method_details": {
+                "card": {
+                  "brand": "visa",
+                  "checks": {
+                    "address_line1_check": null,
+                    "address_postal_code_check": null,
+                    "cvc_check": "pass"
+                  },
+                  "country": "US",
+                  "ds_transaction_id": null,
+                  "exp_month": 9,
+                  "exp_year": 2030,
+                  "fingerprint": null,
+                  "funding": "debit",
+                  "installments": null,
+                  "last4": "4242",
+                  "mandate": null,
+                  "moto": null,
+                  "network": "visa",
+                  "network_token": {
+                    "exp_month": 9,
+                    "exp_year": 2030,
+                    "fingerprint": "OdTRtGskBulROtqa",
+                    "last4": "5556",
+                    "used": false
+                  },
+                  "network_transaction_id": "791008482116711",
+                  "three_d_secure": null,
+                  "wallet": null
+                },
+                "type": "card"
+              },
+              "receipt_email": null,
+              "receipt_number": null,
+              "receipt_url": "https://pay.stripe.com/receipts/payment/CAcaFwoVYWNjdF8xNjBEWDZBV090Z295c29nKKW_76YGMgZFk46uT_Y6LBZ51LZOrwdCQ0w176ShWIhNs2CXEh-L6A9pDYW33I_z6C6SenKNrWasw9Ie",
+              "refunded": false,
+              "refunds": {
+                "object": "list",
+                "data": [
+                ],
+                "has_more": false,
+                "total_count": 0,
+                "url": "/v1/charges/ch_3NfTpgAWOtgoysog1ZcuSdwZ/refunds"
+              },
+              "review": null,
+              "shipping": null,
+              "source": null,
+              "source_transfer": null,
+              "statement_descriptor": null,
+              "statement_descriptor_suffix": null,
+              "status": "succeeded",
+              "transfer_data": null,
+              "transfer_group": null
+            }
+          ],
+          "has_more": false,
+          "total_count": 1,
+          "url": "/v1/charges?payment_intent=pi_3NfTpgAWOtgoysog1SqST5dL"
+        },
+        "client_secret": "pi_3NfRruAWOtgoysog1FxgDwtf_secret_f4ke",
+        "confirmation_method": "manual",
+        "created": 1692131236,
+        "currency": "gbp",
+        "customer": "cus_OSOcijtQkDdBbF",
+        "description": null,
+        "invoice": null,
+        "last_payment_error": null,
+        "latest_charge": "ch_3NfTpgAWOtgoysog1ZcuSdwZ",
+        "level3": null,
+        "livemode": false,
+        "metadata": {
+        },
+        "next_action": null,
+        "on_behalf_of": null,
+        "payment_method": "pm_1NfTpgAWOtgoysogHnl1rNCf",
+        "payment_method_options": {
+          "card": {
+            "installments": null,
+            "mandate_options": null,
+            "network": null,
+            "request_three_d_secure": "automatic"
+          }
+        },
+        "payment_method_types": [
+          "card"
+        ],
+        "processing": null,
+        "receipt_email": null,
+        "review": null,
+        "setup_future_usage": null,
+        "shipping": null,
+        "source": null,
+        "statement_descriptor": null,
+        "statement_descriptor_suffix": null,
+        "status": "requires_capture",
+        "transfer_data": null,
+        "transfer_group": null
+      }
+    RESPONSE
+  end
+
+  def successful_manual_capture_of_payment_intent_response_with_network_token_fields
+    <<-RESPONSE
+      {
+        "id": "pi_3NfTpgAWOtgoysog1SqST5dL",
+        "object": "payment_intent",
+        "amount": 2000,
+        "amount_capturable": 0,
+        "amount_details": {
+          "tip": {
+          }
+        },
+        "amount_received": 2000,
+        "application": null,
+        "application_fee_amount": null,
+        "automatic_payment_methods": null,
+        "canceled_at": null,
+        "cancellation_reason": null,
+        "capture_method": "manual",
+        "charges": {
+          "object": "list",
+          "data": [
+            {
+              "id": "ch_3NfTpgAWOtgoysog1ZcuSdwZ",
+              "object": "charge",
+              "amount": 2000,
+              "amount_captured": 2000,
+              "amount_refunded": 0,
+              "application": null,
+              "application_fee": null,
+              "application_fee_amount": null,
+              "balance_transaction": "txn_3NfTpgAWOtgoysog1ZTZXCvO",
+              "billing_details": {
+                "address": {
+                  "city": null,
+                  "country": null,
+                  "line1": null,
+                  "line2": null,
+                  "postal_code": null,
+                  "state": null
+                },
+                "email": null,
+                "name": "Longbob Longsen",
+                "phone": null
+              },
+              "calculated_statement_descriptor": "SPREEDLY",
+              "captured": true,
+              "created": 1692131237,
+              "currency": "gbp",
+              "customer": "cus_OSOcijtQkDdBbF",
+              "description": null,
+              "destination": null,
+              "dispute": null,
+              "disputed": false,
+              "failure_balance_transaction": null,
+              "failure_code": null,
+              "failure_message": null,
+              "fraud_details": {
+              },
+              "invoice": null,
+              "livemode": false,
+              "metadata": {
+              },
+              "on_behalf_of": null,
+              "order": null,
+              "outcome": {
+                "network_status": "approved_by_network",
+                "reason": null,
+                "risk_level": "normal",
+                "risk_score": 24,
+                "seller_message": "Payment complete.",
+                "type": "authorized"
+              },
+              "paid": true,
+              "payment_intent": "pi_3NfTpgAWOtgoysog1SqST5dL",
+              "payment_method": "pm_1NfTpgAWOtgoysogHnl1rNCf",
+              "payment_method_details": {
+                "card": {
+                  "brand": "visa",
+                  "checks": {
+                    "address_line1_check": null,
+                    "address_postal_code_check": null,
+                    "cvc_check": "pass"
+                  },
+                  "country": "US",
+                  "ds_transaction_id": null,
+                  "exp_month": 9,
+                  "exp_year": 2030,
+                  "fingerprint": null,
+                  "funding": "debit",
+                  "installments": null,
+                  "last4": "4242",
+                  "mandate": null,
+                  "moto": null,
+                  "network": "visa",
+                  "network_token": {
+                    "exp_month": 9,
+                    "exp_year": 2030,
+                    "fingerprint": "OdTRtGskBulROtqa",
+                    "last4": "5556",
+                    "used": false
+                  },
+                  "network_transaction_id": "791008482116711",
+                  "three_d_secure": null,
+                  "wallet": null
+                },
+                "type": "card"
+              },
+              "receipt_email": null,
+              "receipt_number": null,
+              "receipt_url": "https://pay.stripe.com/receipts/payment/CAcaFwoVYWNjdF8xNjBEWDZBV090Z295c29nKKa_76YGMgZZ4Fl_Etg6LBYGcD6D2xFTlgp69zLDZz1ZToBrKKjxhRCpYcnLWInSmJZHcjcBdrhyAKGv",
+              "refunded": false,
+              "refunds": {
+                "object": "list",
+                "data": [
+                ],
+                "has_more": false,
+                "total_count": 0,
+                "url": "/v1/charges/ch_3NfTpgAWOtgoysog1ZcuSdwZ/refunds"
+              },
+              "review": null,
+              "shipping": null,
+              "source": null,
+              "source_transfer": null,
+              "statement_descriptor": null,
+              "statement_descriptor_suffix": null,
+              "status": "succeeded",
+              "transfer_data": null,
+              "transfer_group": null
+            }
+          ],
+          "has_more": false,
+          "total_count": 1,
+          "url": "/v1/charges?payment_intent=pi_3NfTpgAWOtgoysog1SqST5dL"
+        },
+         "client_secret": "pi_3NfRruAWOtgoysog1FxgDwtf_secret_f4ke",
+        "confirmation_method": "manual",
+        "created": 1692131236,
+        "currency": "gbp",
+        "customer": "cus_OSOcijtQkDdBbF",
+        "description": null,
+        "invoice": null,
+        "last_payment_error": null,
+        "latest_charge": "ch_3NfTpgAWOtgoysog1ZcuSdwZ",
+        "level3": null,
+        "livemode": false,
+        "metadata": {
+        },
+        "next_action": null,
+        "on_behalf_of": null,
+        "payment_method": "pm_1NfTpgAWOtgoysogHnl1rNCf",
+        "payment_method_options": {
+          "card": {
+            "installments": null,
+            "mandate_options": null,
+            "network": null,
+            "request_three_d_secure": "automatic"
+          }
+        },
+        "payment_method_types": [
+          "card"
+        ],
+        "processing": null,
+        "receipt_email": null,
+        "review": null,
+        "setup_future_usage": null,
+        "shipping": null,
+        "source": null,
+        "statement_descriptor": null,
+        "statement_descriptor_suffix": null,
+        "status": "succeeded",
+        "transfer_data": null,
+        "transfer_group": null
+        }
     RESPONSE
   end
 
@@ -1212,6 +1825,12 @@ class StripePaymentIntentsTest < Test::Unit::TestCase
     RESPONSE
   end
 
+  def failed_verify_response
+    <<-RESPONSE
+      {"error":{"code":"incorrect_cvc","doc_url":"https://stripe.com/docs/error-codes/incorrect-cvc","message":"Yourcard'ssecuritycodeisincorrect.","param":"cvc","payment_method":{"id":"pm_11111111111111111111","object":"payment_method","billing_details":{"address":{"city":null,"country":null,"line1":null,"line2":null,"postal_code":"12345","state":null},"email":null,"name":"Andrew Earl","phone":null},"card":{"brand":"visa","checks":{"address_line1_check":null,"address_postal_code_check":"pass","cvc_check":"fail"},"country":"US","description":null,"display_brand":{"label":"Visa","logo_url":"https://b.stripecdn.com/cards-metadata/logos/card-visa.svg","type":"visa"},"exp_month":11,"exp_year":2027,"fingerprint":"SuqLiaoeuthnaomyEJhqjSl","funding":"credit","generated_from":null,"iin":"4111111","issuer":"StripeTest(multi-country)","last4":"1111","networks":{"available":["visa"],"preferred":null},"three_d_secure_usage":{"supported":true},"wallet":null},"created":1706803138,"customer":null,"livemode":false,"metadata":{},"type":"card"},"request_log_url":"https://dashboard.stripe.com/acct_1EzHCMD9l2v51lHE/test/logs/req_7bcL8JaztST1Ho?t=1706803138","setup_intent":{"id":"seti_nhtadoeunhtaobjntaheodu","object":"setup_intent","application":"ca_aotnheudnaoethud","automatic_payment_methods":null,"cancellation_reason":null,"client_secret":"seti_nhtadoeunhtaobjntaheodu_secret_aoentuhaosneutkmanotuheidna","created":1706803138,"customer":null,"description":null,"flow_directions":null,"last_setup_error":{"code":"incorrect_cvc","doc_url":"https://stripe.com/docs/error-codes/incorrect-cvc","message":"Your cards security code is incorrect.","param":"cvc","payment_method":{"id":"pm_11111111111111111111","object":"payment_method","billing_details":{"address":{"city":null,"country":null,"line1":null,"line2":null,"postal_code":"12345","state":null},"email":null,"name":"AndrewEarl","phone":null},"card":{"brand":"visa","checks":{"address_line1_check":null,"address_postal_code_check":"pass","cvc_check":"fail"},"country":"US","description":null,"display_brand":{"label":"Visa","logo_url":"https://b.stripecdn.com/cards-metadata/logos/card-visa.svg","type":"visa"},"exp_month":11,"exp_year":2027,"fingerprint":"anotehjbnaroetug","funding":"credit","generated_from":null,"iin":"411111111","issuer":"StripeTest(multi-country)","last4":"1111","networks":{"available":["visa"],"preferred":null},"three_d_secure_usage":{"supported":true},"wallet":null},"created":1706803138,"customer":null,"livemode":false,"metadata":{},"type":"card"},"type":"card_error"},"latest_attempt":"setatt_ansotheuracogeudna","livemode":false,"mandate":null,"metadata":{"transaction_token":"ntahodejrcagoedubntha","order_id":"ntahodejrcagoedubntha","connect_agent":"Spreedly"},"next_action":null,"on_behalf_of":null,"payment_method":null,"payment_method_configuration_details":null,"payment_method_options":{"card":{"mandate_options":null,"network":null,"request_three_d_secure":"automatic"}},"payment_method_types":["card"],"single_use_mandate":null,"status":"requires_payment_method","usage":"off_session"},"type":"card_error"}}
+    RESPONSE
+  end
+
   def failed_payment_method_response
     <<-RESPONSE
       {"error": {"code": "validation_error", "message": "You must verify a phone number on your Stripe account before you can send raw credit card numbers to the Stripe API. You can avoid this requirement by using Stripe.js, the Stripe mobile bindings, or Stripe Checkout. For more information, see https://dashboard.stripe.com/phone-verification.", "type": "invalid_request_error"}}
@@ -1493,5 +2112,104 @@ class StripePaymentIntentsTest < Test::Unit::TestCase
       read 5204 bytes
       Conn close
     SCRUBBED
+  end
+
+  def successful_purchase_avs_pass
+    <<-RESPONSE
+      {
+        "id": "pi_3OAbBTAWOtgoysog36MuKzzw",
+        "object": "payment_intent",
+        "amount": 2000,
+        "amount_capturable": 0,
+        "amount_received": 2000,
+        "capture_method": "automatic",
+        "charges": {
+          "object": "list",
+          "data": [
+            {
+              "id": "ch_3OAbBTAWOtgoysog3eoQxrT9",
+              "object": "charge",
+              "amount": 2000,
+              "amount_captured": 2000,
+              "outcome": {
+                "network_status": "approved_by_network",
+                "reason": null,
+                "risk_level": "normal",
+                "risk_score": 37,
+                "seller_message": "Payment complete.",
+                "type": "authorized"
+              },
+              "paid": true,
+              "payment_intent": "pi_3OAbBTAWOtgoysog36MuKzzw",
+              "payment_method": "pm_1OAbBTAWOtgoysogVf7KTk4H",
+              "payment_method_details": {
+                "card": {
+                  "amount_authorized": 2000,
+                  "brand": "visa",
+                  "checks": {
+                    "address_line1_check": "pass",
+                    "address_postal_code_check": "pass",
+                    "cvc_check": "pass"
+                  },
+                  "country": "US",
+                  "ds_transaction_id": null,
+                  "exp_month": 10,
+                  "exp_year": 2028,
+                  "extended_authorization": {
+                    "status": "disabled"
+                  },
+                  "fingerprint": "hfaVNMiXc0dYSiC5",
+                  "funding": "credit",
+                  "incremental_authorization": {
+                    "status": "unavailable"
+                  },
+                  "installments": null,
+                  "last4": "4242",
+                  "mandate": null,
+                  "moto": null,
+                  "multicapture": {
+                    "status": "unavailable"
+                  },
+                  "network": "visa",
+                  "network_token": {
+                    "used": false
+                  },
+                  "network_transaction_id": "104102978678771",
+                  "overcapture": {
+                    "maximum_amount_capturable": 2000,
+                    "status": "unavailable"
+                  },
+                  "three_d_secure": null,
+                  "wallet": null
+                },
+                "type": "card"
+              },
+              "receipt_url": "https://pay.stripe.com/receipts/payment/CAcaFwoVYWNjdF8xNjBEWDZBV090Z295c29nKJCUtKoGMgYHwo4IbXs6LBbLMStawAC9eTsIUAmLDXw4dZNPmxzC6ds3zZxb-WVIVBJi_F4M59cPA3fR",
+              "refunded": false,
+              "refunds": {
+                "object": "list",
+                "data": [],
+                "has_more": false,
+                "total_count": 0,
+                "url": "/v1/charges/ch_3OAbBTAWOtgoysog3eoQxrT9/refunds"
+              }
+            }
+          ],
+          "has_more": false,
+          "total_count": 1,
+          "url": "/v1/charges?payment_intent=pi_3OAbBTAWOtgoysog36MuKzzw"
+        },
+        "client_secret": "pi_3OAbBTAWOtgoysog36MuKzzw_secret_YjUUEVStFrCFJK0imrUjspILY",
+        "confirmation_method": "automatic",
+        "created": 1699547663,
+        "currency": "usd",
+        "latest_charge": "ch_3OAbBTAWOtgoysog3eoQxrT9",
+        "payment_method": "pm_1OAbBTAWOtgoysogVf7KTk4H",
+        "payment_method_types": [
+          "card"
+        ],
+        "status": "succeeded"
+      }
+    RESPONSE
   end
 end

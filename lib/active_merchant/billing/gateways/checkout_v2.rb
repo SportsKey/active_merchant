@@ -18,13 +18,13 @@ module ActiveMerchant #:nodoc:
 
       def initialize(options = {})
         @options = options
-        @access_token = nil
+        @access_token = options[:access_token] || nil
 
         if options.has_key?(:secret_key)
           requires!(options, :secret_key)
         else
           requires!(options, :client_id, :client_secret)
-          @access_token = setup_access_token
+          @access_token ||= setup_access_token
         end
 
         super
@@ -57,12 +57,13 @@ module ActiveMerchant #:nodoc:
 
       def credit(amount, payment, options = {})
         post = {}
-        post[:instruction] = {}
-        post[:instruction][:funds_transfer_type] = options[:funds_transfer_type] || 'FD'
         add_processing_channel(post, options)
         add_invoice(post, amount, options)
         add_payment_method(post, payment, options, :destination)
         add_source(post, options)
+        add_instruction_data(post, options)
+        add_payout_sender_data(post, options)
+        add_payout_destination_data(post, options)
 
         commit(:credit, post, options)
       end
@@ -87,7 +88,7 @@ module ActiveMerchant #:nodoc:
         authorize(0, credit_card, options)
       end
 
-      def verify_payment(authorization, option = {})
+      def verify_payment(authorization, options = {})
         commit(:verify_payment, nil, options, authorization, :get)
       end
 
@@ -173,6 +174,7 @@ module ActiveMerchant #:nodoc:
       end
 
       def add_payment_method(post, payment_method, options, key = :source)
+        # the key = :destination when this method is called in def credit
         post[key] = {}
         case payment_method
         when NetworkTokenizationCreditCard
@@ -190,13 +192,23 @@ module ActiveMerchant #:nodoc:
           post[key][:type] = 'card'
           post[key][:name] = payment_method.name
           post[key][:number] = payment_method.number
-          post[key][:cvv] = payment_method.verification_value
+          post[key][:cvv] = payment_method.verification_value unless options[:funds_transfer_type]
           post[key][:stored] = 'true' if options[:card_on_file] == true
+
+          # because of the way the key = is implemented in the method signature, some of the destination
+          # data will be added here, some in the destination specific method below.
+          # at first i was going to move this, but since this data is coming from the payment method
+          # i think it makes sense to leave it
           if options[:account_holder_type]
             post[key][:account_holder] = {}
             post[key][:account_holder][:type] = options[:account_holder_type]
-            post[key][:account_holder][:first_name] = payment_method.first_name if payment_method.first_name
-            post[key][:account_holder][:last_name] = payment_method.last_name if payment_method.last_name
+
+            if options[:account_holder_type] == 'corporate' || options[:account_holder_type] == 'government'
+              post[key][:account_holder][:company_name] = payment_method.name if payment_method.respond_to?(:name)
+            else
+              post[key][:account_holder][:first_name] = payment_method.first_name if payment_method.first_name
+              post[key][:account_holder][:last_name] = payment_method.last_name if payment_method.last_name
+            end
           else
             post[key][:first_name] = payment_method.first_name if payment_method.first_name
             post[key][:last_name] = payment_method.last_name if payment_method.last_name
@@ -276,7 +288,7 @@ module ActiveMerchant #:nodoc:
       end
 
       def add_stored_credentials_using_normalized_fields(post, options)
-        if options[:stored_credential][:initial_transaction] == true
+        if options[:stored_credential][:initiator] == 'cardholder'
           post[:merchant_initiated] = false
         else
           post[:source][:stored] = true
@@ -321,6 +333,82 @@ module ActiveMerchant #:nodoc:
         post[:processing_channel_id] = options[:processing_channel_id] if options[:processing_channel_id]
       end
 
+      def add_instruction_data(post, options)
+        post[:instruction] = {}
+        post[:instruction][:funds_transfer_type] = options[:funds_transfer_type] || 'FD'
+        post[:instruction][:purpose] = options[:instruction_purpose] if options[:instruction_purpose]
+      end
+
+      def add_payout_sender_data(post, options)
+        return unless options[:payout] == true
+
+        post[:sender] = {
+          # options for type are individual, corporate, or government
+          type: options[:sender][:type],
+          # first and last name required if sent by type: individual
+          first_name: options[:sender][:first_name],
+          middle_name: options[:sender][:middle_name],
+          last_name: options[:sender][:last_name],
+          # company name required if sent by type: corporate or government
+          company_name: options[:sender][:company_name],
+          # these are required fields for payout, may not work if address is blank or different than cardholder(option for sender to be a company or government).
+          # may need to still include in GSF hash.
+
+          address: {
+            address_line1: options.dig(:sender, :address, :address1),
+            address_line2: options.dig(:sender, :address, :address2),
+            city: options.dig(:sender, :address, :city),
+            state: options.dig(:sender, :address, :state),
+            country: options.dig(:sender, :address, :country),
+            zip: options.dig(:sender, :address, :zip)
+          }.compact,
+          reference: options[:sender][:reference],
+          reference_type: options[:sender][:reference_type],
+          source_of_funds: options[:sender][:source_of_funds],
+          # identification object is conditional. required when card metadata issuer_country = AR, BR, CO, or PR
+          # checkout docs say PR (Peru), but PR is puerto rico and PE is Peru so yikes
+          identification: {
+            type: options.dig(:sender, :identification, :type),
+            number: options.dig(:sender, :identification, :number),
+            issuing_country: options.dig(:sender, :identification, :issuing_country),
+            date_of_expiry: options.dig(:sender, :identification, :date_of_expiry)
+          }.compact,
+          date_of_birth: options[:sender][:date_of_birth],
+          country_of_birth: options[:sender][:country_of_birth],
+          nationality: options[:sender][:nationality]
+        }.compact
+      end
+
+      def add_payout_destination_data(post, options)
+        return unless options[:payout] == true
+
+        post[:destination] ||= {}
+        post[:destination][:account_holder] ||= {}
+        post[:destination][:account_holder][:email] = options[:destination][:account_holder][:email] if options[:destination][:account_holder][:email]
+        post[:destination][:account_holder][:date_of_birth] = options[:destination][:account_holder][:date_of_birth] if options[:destination][:account_holder][:date_of_birth]
+        post[:destination][:account_holder][:country_of_birth] = options[:destination][:account_holder][:country_of_birth] if options[:destination][:account_holder][:country_of_birth]
+        # below fields only required during a card to card payout
+        post[:destination][:account_holder][:phone] = {}
+        post[:destination][:account_holder][:phone][:country_code] = options.dig(:destination, :account_holder, :phone, :country_code) if options.dig(:destination, :account_holder, :phone, :country_code)
+        post[:destination][:account_holder][:phone][:number] = options.dig(:destination, :account_holder, :phone, :number) if options.dig(:destination, :account_holder, :phone, :number)
+
+        post[:destination][:account_holder][:identification] = {}
+        post[:destination][:account_holder][:identification][:type] = options.dig(:destination, :account_holder, :identification, :type) if options.dig(:destination, :account_holder, :identification, :type)
+        post[:destination][:account_holder][:identification][:number] = options.dig(:destination, :account_holder, :identification, :number) if options.dig(:destination, :account_holder, :identification, :number)
+        post[:destination][:account_holder][:identification][:issuing_country] = options.dig(:destination, :account_holder, :identification, :issuing_country) if options.dig(:destination, :account_holder, :identification, :issuing_country)
+        post[:destination][:account_holder][:identification][:date_of_expiry] = options.dig(:destination, :account_holder, :identification, :date_of_expiry) if options.dig(:destination, :account_holder, :identification, :date_of_expiry)
+
+        if address = options[:billing_address] || options[:address] # destination address will come from the tokenized card billing address
+          post[:destination][:account_holder][:billing_address] = {}
+          post[:destination][:account_holder][:billing_address][:address_line1] = address[:address1] unless address[:address1].blank?
+          post[:destination][:account_holder][:billing_address][:address_line2] = address[:address2] unless address[:address2].blank?
+          post[:destination][:account_holder][:billing_address][:city] = address[:city] unless address[:city].blank?
+          post[:destination][:account_holder][:billing_address][:state] = address[:state] unless address[:state].blank?
+          post[:destination][:account_holder][:billing_address][:country] = address[:country] unless address[:country].blank?
+          post[:destination][:account_holder][:billing_address][:zip] = address[:zip] unless address[:zip].blank?
+        end
+      end
+
       def add_marketplace_data(post, options)
         if options[:marketplace]
           post[:marketplace] = {}
@@ -341,8 +429,19 @@ module ActiveMerchant #:nodoc:
 
       def setup_access_token
         request = 'grant_type=client_credentials'
-        response = parse(ssl_post(access_token_url, request, access_token_header))
-        response['access_token']
+        begin
+          raw_response = ssl_post(access_token_url, request, access_token_header)
+        rescue ResponseError => e
+          raise OAuthResponseError.new(e)
+        else
+          response = parse(raw_response)
+
+          if (access_token = response['access_token'])
+            access_token
+          else
+            raise OAuthResponseError.new(response)
+          end
+        end
       end
 
       def commit(action, post, options, authorization = nil, method = :post)
@@ -359,18 +458,18 @@ module ActiveMerchant #:nodoc:
 
         succeeded = success_from(action, response)
 
-        response(action, succeeded, response, source_id)
+        response(action, succeeded, response, options, source_id)
       end
 
-      def response(action, succeeded, response, source_id = nil)
+      def response(action, succeeded, response, options = {}, source_id = nil)
         authorization = authorization_from(response) unless action == :unstore
         body = action == :unstore ? { response_code: response.to_s } : response
         Response.new(
           succeeded,
-          message_from(succeeded, response),
+          message_from(succeeded, response, options),
           body,
           authorization: authorization,
-          error_code: error_code_from(succeeded, body),
+          error_code: error_code_from(succeeded, body, options),
           test: test?,
           avs_result: avs_result(response),
           cvv_result: cvv_result(response)
@@ -454,13 +553,19 @@ module ActiveMerchant #:nodoc:
         response['response_summary'] == 'Approved' || response['approved'] == true || !response.key?('response_summary') && response.key?('action_id')
       end
 
-      def message_from(succeeded, response)
+      def message_from(succeeded, response, options)
         if succeeded
           'Succeeded'
         elsif response['error_type']
           response['error_type'] + ': ' + response['error_codes'].first
         else
-          response['response_summary'] || response['response_code'] || response['status'] || response['message'] || 'Unable to read error message'
+          response_summary = if options[:threeds_response_message]
+                               response['response_summary'] || response.dig('actions', 0, 'response_summary')
+                             else
+                               response['response_summary']
+                             end
+
+          response_summary || response['response_code'] || response['status'] || response['message'] || 'Unable to read error message'
         end
       end
 
@@ -481,7 +586,7 @@ module ActiveMerchant #:nodoc:
         raw['id']
       end
 
-      def error_code_from(succeeded, response)
+      def error_code_from(succeeded, response, options)
         return if succeeded
 
         if response['error_type'] && response['error_codes']
@@ -489,7 +594,13 @@ module ActiveMerchant #:nodoc:
         elsif response['error_type']
           response['error_type']
         else
-          STANDARD_ERROR_CODE_MAPPING[response['response_code']]
+          response_code = if options[:threeds_response_message]
+                            response['response_code'] || response.dig('actions', 0, 'response_code')
+                          else
+                            response['response_code']
+                          end
+
+          STANDARD_ERROR_CODE_MAPPING[response_code]
         end
       end
 

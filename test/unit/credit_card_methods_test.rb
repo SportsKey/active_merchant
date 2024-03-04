@@ -363,6 +363,7 @@ class CreditCardMethodsTest < Test::Unit::TestCase
     assert_equal 'cabal', CreditCard.brand?('6035224400000000')
     assert_equal 'cabal', CreditCard.brand?('6502723300000000')
     assert_equal 'cabal', CreditCard.brand?('6500870000000000')
+    assert_equal 'cabal', CreditCard.brand?('6509000000000000')
   end
 
   def test_should_detect_unionpay_card
@@ -504,6 +505,49 @@ class CreditCardMethodsTest < Test::Unit::TestCase
 
   def test_should_detect_panal_card
     assert_equal 'panal', CreditCard.brand?('6020490000000000')
+  end
+
+  def test_detecting_full_range_of_verve_card_numbers
+    verve = '506099000000000'
+
+    assert_equal 15, verve.length
+    assert_not_equal 'verve', CreditCard.brand?(verve)
+
+    4.times do
+      verve << '0'
+      assert_equal 'verve', CreditCard.brand?(verve), "Failed for bin #{verve}"
+    end
+
+    assert_equal 19, verve.length
+
+    verve << '0'
+    assert_not_equal 'verve', CreditCard.brand?(verve)
+  end
+
+  def test_should_detect_verve
+    credit_cards = %w[5060990000000000
+                      506112100000000000
+                      5061351000000000000
+                      5061591000000000
+                      506175100000000000
+                      5078801000000000000
+                      5079381000000000
+                      637058100000000000
+                      5079400000000000000
+                      507879000000000000
+                      5061930000000000
+                      506136000000000000]
+    credit_cards.all? { |cc| CreditCard.brand?(cc) == 'verve' }
+  end
+
+  def test_should_detect_tuya_card
+    assert_equal 'tuya', CreditCard.brand?('5888000000000000')
+  end
+
+  def test_should_validate_tuya_card
+    assert_true CreditCard.valid_number?('5888001211111111')
+    # numbers with invalid formats
+    assert_false CreditCard.valid_number?('5888_0000_0000_0030')
   end
 
   def test_credit_card?

@@ -116,6 +116,64 @@ class RemoteCheckoutV2Test < Test::Unit::TestCase
       phone_country_code: '1',
       phone: '9108675309'
     )
+    @payout_options = @options.merge(
+      source_type: 'currency_account',
+      source_id: 'ca_spwmped4qmqenai7hcghquqle4',
+      funds_transfer_type: 'FD',
+      instruction_purpose: 'leisure',
+      destination: {
+        account_holder: {
+          phone: {
+            number: '9108675309',
+            country_code: '1'
+          },
+          identification: {
+            type: 'passport',
+            number: '12345788848438'
+          }
+        }
+      },
+      currency: 'GBP',
+      sender: {
+        type: 'individual',
+        first_name: 'Jane',
+        middle_name: 'Middle',
+        last_name: 'Doe',
+        address: {
+          address1: '123 Main St',
+          address2: 'Apt G',
+          city: 'Narnia',
+          state: 'ME',
+          zip: '12345',
+          country: 'US'
+        },
+        reference: '012345',
+        reference_type: 'other',
+        source_of_funds: 'debit',
+          identification: {
+            type: 'passport',
+            number: 'ABC123',
+            issuing_country: 'US',
+            date_of_expiry: '2027-07-07'
+          }
+      }
+    )
+  end
+
+  def test_failed_access_token
+    assert_raises(ActiveMerchant::OAuthResponseError) do
+      gateway = CheckoutV2Gateway.new({ client_id: 'YOUR_CLIENT_ID', client_secret: 'YOUR_CLIENT_SECRET' })
+      gateway.send :setup_access_token
+    end
+  end
+
+  def test_failed_purchase_with_failed_access_token
+    error = assert_raises(ActiveMerchant::OAuthResponseError) do
+      gateway = CheckoutV2Gateway.new({ client_id: 'YOUR_CLIENT_ID', client_secret: 'YOUR_CLIENT_SECRET' })
+      gateway.purchase(@amount, @credit_card, @options)
+    end
+
+    assert_equal error.message, 'Failed with 400 Bad Request'
   end
 
   def test_transcript_scrubbing
@@ -632,6 +690,36 @@ class RemoteCheckoutV2Test < Test::Unit::TestCase
     @credit_card.first_name = 'John'
     @credit_card.last_name = 'Doe'
     response = @gateway_oauth.credit(@amount, @credit_card, @options.merge({ source_type: 'currency_account', source_id: 'ca_spwmped4qmqenai7hcghquqle4', account_holder_type: 'individual' }))
+    assert_success response
+    assert_equal 'Succeeded', response.message
+  end
+
+  def test_successful_money_transfer_payout_via_credit_individual_account_holder_type
+    @credit_card.first_name = 'John'
+    @credit_card.last_name = 'Doe'
+    response = @gateway_oauth.credit(@amount, @credit_card, @payout_options.merge(account_holder_type: 'individual', payout: true))
+    assert_success response
+    assert_equal 'Succeeded', response.message
+  end
+
+  def test_successful_money_transfer_payout_via_credit_corporate_account_holder_type
+    @credit_card.name = 'ACME, Inc.'
+    response = @gateway_oauth.credit(@amount, @credit_card, @payout_options.merge(account_holder_type: 'corporate', payout: true))
+    assert_success response
+    assert_equal 'Succeeded', response.message
+  end
+
+  def test_money_transfer_payout_reverts_to_credit_if_payout_sent_as_nil
+    @credit_card.first_name = 'John'
+    @credit_card.last_name = 'Doe'
+    response = @gateway_oauth.credit(@amount, @credit_card, @payout_options.merge({ account_holder_type: 'individual', payout: nil }))
+    assert_success response
+    assert_equal 'Succeeded', response.message
+  end
+
+  def test_money_transfer_payout_handles_blank_destination_address
+    @payout_options[:billing_address] = nil
+    response = @gateway_oauth.credit(@amount, @credit_card, @payout_options.merge({ account_holder_type: 'individual', payout: true }))
     assert_success response
     assert_equal 'Succeeded', response.message
   end
